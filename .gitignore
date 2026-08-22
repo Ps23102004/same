@@ -1,0 +1,30 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# models / weights / caches
+*.pt
+*.bin
+*.safetensors
+.hf_cache/
+.cache/
+
+# app data — never commit photos or the built index
+photos/
+sample_photos/
+.index*/
+*.log
+
+# node / frontend
+node_modules/
+dist/
+frontend/dist/
+
+# env
+.env
+.env.*
+
+# os
+.DS_Store
