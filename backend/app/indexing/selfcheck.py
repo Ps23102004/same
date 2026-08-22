@@ -88,12 +88,23 @@ def main(folder: Path) -> int:
               f"{store.rows} region vectors, unit-norm")
 
         by_name = {Path(e.path).name: e for e in store.photos.values()}
-        if "target_00.jpg" not in by_name:
+        if "A_00.jpg" not in by_name:
             print("[--] not the synthetic sample set; skipping the retrieval checks")
             return 0
 
+        # evalset.py names instances A/B/C, the pixel-identical twin T, and the
+        # object-free scenes `unrelated`. (These were `target_`/`distractor_`
+        # once; everything below asked for the old names, so the whole retrieval
+        # half of this selfcheck silently skipped instead of running.)
+        # T counts as the same instance for STAGE 1 -- it is the same pixels, so
+        # ranking it highly is correct -- but it is left out of the stage-2
+        # separation test, where it would sit on the wrong side of a boundary
+        # that is supposed to be about different objects.
+        SAME = ("A_", "T_")
+        OTHER = ("B_", "C_", "unrelated_")
+
         # ---- stage 1: instance recall, not class recall --------------------
-        q = by_name["target_00.jpg"]
+        q = by_name["A_00.jpg"]
         img = open_image(q.path)
         w, h = img.size
         qbox = locate_object(img)
@@ -105,9 +116,9 @@ def main(folder: Path) -> int:
         qv = emb.embed_crops(img, qbox[None, :])[0]
         hits = [x for x in store.search(qv, top_k_photos=24) if x.photo_id != q.id]
         names = [Path(store.photos[x.photo_id].path).name for x in hits]
-        p7 = sum(n.startswith("target_") for n in names[:7])
+        p7 = sum(n.startswith(SAME) for n in names[:7])
         print(f"[--] stage-1 top-7: {names[:7]}")
-        assert names[0].startswith("target_"), f"top-1 recall hit is not the instance: {names[0]}"
+        assert names[0].startswith(SAME), f"top-1 recall hit is not the instance: {names[0]}"
         assert p7 >= 3, f"stage-1 recall too weak: {p7}/7"
         print(f"[ok] stage-1 recall: top-1 is the same instance, precision@7 = {p7}/7 "
               f"(7 same-instance photos exist; the rest is stage-2's job)")
@@ -116,9 +127,9 @@ def main(folder: Path) -> int:
         crop = img.crop((int(qbox[0] * w), int(qbox[1] * h), int(qbox[2] * w), int(qbox[3] * h)))
         qxy, qd = sift_features(crop)
         tgt = [ransac_inliers(qxy, qd, *store.sift_for(by_name[n].id))
-               for n in sorted(by_name) if n.startswith("target_") and n != "target_00.jpg"]
+               for n in sorted(by_name) if n.startswith("A_") and n != "A_00.jpg"]
         dis = [ransac_inliers(qxy, qd, *store.sift_for(by_name[n].id))
-               for n in sorted(by_name) if n.startswith("distractor_")]
+               for n in sorted(by_name) if n.startswith(OTHER)]
         print(f"[--] query crop SIFT keypoints: {len(qxy)}")
         print(f"[--] stage-2 inliers, same instance      ({len(tgt):2d}): {tgt}")
         print(f"[--] stage-2 inliers, same class/other   ({len(dis):2d}): {dis}")
@@ -133,7 +144,7 @@ def main(folder: Path) -> int:
         print(f"[ok] stage-2 features separate: at inliers >= {boundary}, "
               f"{clean}/{len(tgt)} same-instance photos pass and "
               f"0/{len(dis)} same-class impostors do")
-        assert (store.sift_dir / f"{by_name['target_01.jpg'].id}.npz").exists()
+        assert (store.sift_dir / f"{by_name['A_01.jpg'].id}.npz").exists()
         print("[ok] SIFT cache persisted under .index/sift/")
         return 0
     finally:

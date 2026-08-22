@@ -51,11 +51,16 @@ def _flann() -> "cv2.FlannBasedMatcher":
     return m
 
 # RANSAC samples randomly. For a well-textured object with 130 correspondences
-# that is irrelevant, but a flat blurred object sits at 4-6 correspondences and
-# the same query can land either side of the accept gate run to run (measured:
-# recall 0.21 vs 0.46 on the hard suite across two runs). Pinning the seed makes
-# results reproducible; it does NOT remove the underlying fragility, which is a
-# real property of the hard case and is reported as such in the README.
+# that is irrelevant, but a flat blurred object sits at 4-6 correspondences, so
+# which triples get sampled can decide the outcome. Pinning the seed makes that
+# reproducible; it does NOT remove the underlying fragility, which is a real
+# property of the hard case and is reported as such in the README.
+#
+# The big `hard` swings previously blamed on this line (recall 0.21 vs 0.46
+# "across two runs") were NOT RANSAC. evalset seeded scene layout with hash() of
+# a str, which PYTHONHASHSEED randomises per process, so those two runs were
+# scoring two DIFFERENT benchmarks. Fixed in evalset._scene_rng; with the set
+# pinned, repeated runs of http_eval now return byte-identical counts.
 cv2.setRNGSeed(0)
 
 
@@ -170,7 +175,13 @@ def verify_all(
     on what is left. Sorted by inlier count, best first.
     """
     if q_desc is None or c_desc is None or len(q_desc) < 2 or len(c_desc) < 2:
-        return []
+        # Sentinel, NOT []. Every other exit returns at least one Verification
+        # and all three callers index [0] straight away, so a bare [] here was
+        # an IndexError. Reachable: search() keeps any exemplar crop with
+        # `len(desc)` >= 1, knnMatch needs 2, so a crop with exactly one SIFT
+        # descriptor -- a flat region the user confirmed -- took the whole
+        # query out with a 500.
+        return [Verification(0, 0, None)]
     pairs = _flann().knnMatch(np.ascontiguousarray(q_desc, np.float32),
                             np.ascontiguousarray(c_desc, np.float32), k=2)
     good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < RATIO * p[1].distance]
@@ -221,3 +232,24 @@ def verify(
     """
     return verify_all(q_xy, q_desc, q_size, c_xy, c_desc, c_size,
                       full_affine=full_affine, max_detections=1)[0]
+
+
+def _selfcheck() -> None:
+    """A degenerate descriptor set must not take the query down.
+
+    Regression guard: verify_all's short-circuit used to `return []` while every
+    other exit returned at least one Verification, and all three callers index
+    [0] immediately. One SIFT descriptor on either side is enough to hit it.
+    """
+    xy = np.zeros((1, 2), np.float32)
+    one = np.zeros((1, 128), np.float32)
+    two = np.zeros((2, 128), np.float32)
+    for q, c in ((one, two), (two, one), (one, one),
+                 (np.zeros((0, 128), np.float32), two)):
+        assert verify_all(xy, q, (8, 8), xy, c, (8, 8))[0].inliers == 0
+        assert verify(xy, q, (8, 8), xy, c, (8, 8)).inliers == 0
+    print("verify selfcheck OK")
+
+
+if __name__ == "__main__":
+    _selfcheck()

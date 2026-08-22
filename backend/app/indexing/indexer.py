@@ -187,7 +187,19 @@ def scan(folder: Path, store: IndexStore, interval_sec: float,
                 continue
             report(f"sampling frames from {path.name}")
             start = _video_creation_time(path)
-            for frame_path, t in sample_video(path, store.frames_dir, interval_sec):
+            try:
+                frames = sample_video(path, store.frames_dir, interval_sec)
+            except FileNotFoundError:
+                # ffmpeg is not installed. One missing optional tool must not
+                # fail the whole library the way an unreadable image doesn't
+                # (see the per-file guard in the embed loop below).
+                report("ffmpeg not found on PATH — skipping videos "
+                       "(brew install ffmpeg to index them)")
+                continue
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                report(f"could not sample {path.name}: {exc}")
+                continue
+            for frame_path, t in frames:
                 frames_extracted += 1
                 pid = _photo_id(f"{key}@{t}")
                 seen.add(pid)

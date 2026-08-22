@@ -68,37 +68,48 @@ leave-one-out queries per suite, 7 true positives each, so 56 per suite.
 
 | suite | recall | same-class-different-instance accepted | unrelated accepted | median latency |
 |---|---|---|---|---|
-| easy (object ≈30% of a 1600px frame, textured) | **56/56 = 1.000** | **0** / 128 | 0 / 384 | 0.29 s |
-| hard (16%, flat surface, blurred, JPEG q55, 25% occluded) | 25/56 = 0.446 | 1 / 128 | 0 / 384 | 0.29 s |
-| hard, after confirming returned matches | **34/56 = 0.607** | 1 / 128 | 0 / 384 | 0.29 s |
+| easy (object ≈30% of a 1600px frame, textured) | **56/56 = 1.000** | **0** / 128 | 0 / 384 | 0.33 s |
+| hard (16%, flat surface, blurred, JPEG q55, 25% occluded) | 23/56 = 0.411 | **0** / 128 | 0 / 384 | 0.33 s |
+| hard, after confirming returned matches | **33/56 = 0.589** | **0** / 128 | 0 / 384 | 0.33 s |
 
 The module's own leave-one-out harness (`retrieval/eval.py`, 8 queries per suite)
-agrees and adds the small-object case:
+agrees to the match — same 23/56 and 33/56 on `hard` — and adds the small-object
+case:
 
 | suite | same instance accepted | same class, different instance | unrelated |
 |---|---|---|---|
 | easy | 56/56 = **1.000** | **0** / 128 | 0 / 96 |
 | **small** (object at 7% of the frame, ≈110 px) | 56/56 = **1.000** | **0** / 128 | 0 / 96 |
-| hard | 13–20 / 56 = 0.23–0.36 | **0** / 128 | 0 / 96 |
-| hard, after confirming | 19–39 / 56 = 0.34–0.70 | **0** / 128 | 0 / 96 |
+| hard | 23/56 = 0.411 | **0** / 128 | 0 / 96 |
+| hard, after confirming | 33/56 = 0.589 | **0** / 128 | 0 / 96 |
 
 Small-object recall of 1.000 at 7% of frame width is the region pyramid earning
-its keep — a whole-image embedding cannot find that object at all. The hard suite
-is quoted as a **range across identical runs**: with only 4–6 correspondences to
-work with, which ones RANSAC happens to sample decides the outcome, and that
-instability is a real property of the case, not measurement sloppiness.
+its keep — a whole-image embedding cannot find that object at all.
 
-*Same-class-different-instance acceptance is 0 on every suite except `hard`,
-where it is 1 in 128.* That single failure is worth naming: querying `hard/A_01`
-accepts `hard/C_00` — a different instance of the same class — at exactly 6
-inliers, which is `MIN_INLIERS`. On a flat blurred surface the true and false
-match distributions are close enough to touch at the operating point, so the
-gate that is comfortable on `easy` is sitting on the edge on `hard`. Raising
-`MIN_INLIERS` to 7 removes it and costs recall; the trade has not been made.
+**These numbers are now reproducible, and until recently they were not.**
+`evalset` seeded scene layout with `hash()` of a `str`, which CPython salts with
+a per-process `PYTHONHASHSEED`. Instance surfaces came from numpy and stayed
+put, so every build looked like the same benchmark while the backgrounds, object
+sizes, rotations, positions and occlusions were redrawn — and the difficulty
+moved with them. Measured across processes, `hard` swung between recall 0.18 and
+0.45 on nothing but the interpreter's salt. That variance was being reported
+here as RANSAC's, and it is why the `hard` row used to be quoted as a range.
+`evalset._scene_rng` now derives from `crc32`, so `build(..., seed=7)` gives the
+same bytes on every machine; two full `--build` runs of `http_eval` return
+identical counts, and `eval.py` independently lands on the same figures.
 
-Stage 1 alone gives P@5 = 0.18–0.38 depending on suite, and nearly every one of
+*Same-class-different-instance acceptance is 0 on every suite.* It is not
+comfortable on `hard`, though: the true-match inlier counts there run 0–11
+against a `MIN_INLIERS` of 6, so the true and false distributions very nearly
+touch, and on unpinned sets a same-class photo has been observed landing at
+exactly 6. Raising `MIN_INLIERS` to 7 buys margin and costs recall; the trade
+has not been made.
+
+Stage 1 alone gives P@5 = 0.18–0.33 depending on suite, and nearly every one of
 its errors is the right class and the wrong object — which is exactly why
-stage 2 exists.
+stage 2 exists. Concretely, on `easy` stage 1 scores the target instance at mean
+cosine 0.925 and the same-class traps at 0.913: it cannot tell them apart. Stage
+2 then separates the same two groups by 67–130 inliers against 0–10.
 
 **Real photographs.** 30 frames sampled from a real 4K video (rain, night, heavy
 compression): boxing one specific building in frame 0 returns **28–29 of the 29
@@ -106,12 +117,38 @@ other frames**, every returned box on that same building. 183 real photos and
 video frames from a personal library index at 2.73 img/s; queries run at 0.69 s
 median, 3.1 s worst case.
 
-**Where it fails, honestly.** The `hard` suite recalls 0.34–0.45. SIFT finds ~24
+**Where it fails, honestly.** The `hard` suite recalls 0.411. SIFT finds ~24
 keypoints on a flat blurred surface and you cannot RANSAC a consensus out of
 nothing; confirming a couple of sightings recovers half the gap, but the real
 upgrade is a learned matcher (SuperPoint + LightGlue, or LoFTR) at the
 `verify.py` seam. RANSAC also samples randomly, so a candidate sitting on the
 gate can flip between runs — the 29th video frame does exactly that.
+
+**Recall is capped by the stage-1 funnel once the library is big.** Every recall
+number above is measured on an index of 44–80 photos, where `top_k = 200` admits
+the entire library and stage 1 costs nothing. It does not stay free. Measured on
+a 640-photo index built from eight independently-seeded copies of both suites:
+
+| candidates verified | recall | lost in the stage-1 funnel | rejected by stage 2 |
+|---|---|---|---|
+| `top_k = 200` (the shipped default) | 104/120 = 0.867 | 16 | **0** |
+| `top_k = 640` (whole library) | 120/120 = **1.000** | 0 | **0** |
+
+Stage 2 rejected *zero* true positives either way — the entire loss is true
+positives the region embedding never ranked into the top 200. So on a real
+50k-photo library the number to worry about is not the gate, it is how well
+stage 1 ranks. Raising `top_k` restores recall and costs stage-2 time linearly;
+the right fix is a better stage-1 ranking, not a bigger shortlist, and it is
+not done.
+
+**How hard the synthetic traps really are.** Instances B and C share A's
+silhouette but get an entirely independent surface, so a descriptor matcher has
+an easy time separating them — which is why the same-class column is a clean 0
+rather than a close call. Two teddy bears of the same model share texture
+*layout* too, and the honest bound on that case is the twin result: a
+pixel-identical copy is accepted 64/64, exactly as it should be. Read the 0/128
+as "stage 2 does the discriminating stage 1 cannot", not as a claim about
+mass-produced lookalikes; those are the confirm/reject control's job.
 
 ## Choosing the operating point
 
@@ -198,6 +235,11 @@ cd frontend && npm run dev                                         # terminal 2
 Open the printed Vite URL, paste an absolute folder path, and index. Point it at
 a different backend port with `SAME_API=http://127.0.0.1:8011 npm run dev`.
 
+The index is written to `.index/` in the backend's working directory; set
+`SAME_INDEX_DIR` to put it elsewhere. **Indexing videos needs `ffmpeg` and
+`ffprobe` on `PATH`** (`brew install ffmpeg`); without them a folder of photos
+indexes fine and any video in it is skipped with a warning.
+
 A labelled demo set (target instance + same-class traps + unrelated scenes):
 
 ```bash
@@ -239,14 +281,21 @@ uv run python -m backend.app.retrieval.http_eval
 
 ## Costs and limits
 
-* **Index size ≈ 280 KB/photo** (region vectors + hnswlib's own float32 copy),
-  plus a lazily-built SIFT cache of ~520 KB per 12 MP photo. Roughly 40 GB for
-  50k photos. Levers: fewer fine-scale regions, or PCA 768 → 256.
-* **Throughput**: 13 img/s on 1600 px images, 2.7 img/s on a real mixed library of
+* **Index size ≈ 170 KB/photo**, and it does not depend on image resolution:
+  35 region vectors as float16 is 52 KB, hnswlib keeps its own float32 copy at
+  105 KB, and the graph plus region boxes add ~10 KB. Measured 168 KB/photo at
+  both 44 and 640 photos. Add a lazily-built SIFT cache of ~520 KB per 12 MP
+  photo (48 KB per 1600 px photo, measured). Roughly 34 GB for 50k 12 MP photos.
+  Levers: fewer fine-scale regions, or PCA 768 → 256.
+* **Throughput**: 11–13 img/s on 1600 px images (10.6–12.8 measured across
+  runs), 2.7 img/s on a real mixed library of
   12 MP HEIC/JPEG plus video decoding (M-series, MPS). Re-indexing is incremental
   — unchanged files cost one `stat()`.
 * **Query latency**: 0.23–0.7 s median. Stage 2 verifies up to 200 candidates in a
-  thread pool; that is the whole cost, and it is flat in library size beyond 200.
+  thread pool; that is the whole cost, and the *cost* is flat in library size
+  beyond 200 — recall is not, see "Where it fails, honestly". Measured on a
+  640-photo index: 0.42 s median with the SIFT cache warm, 0.70 s median cold,
+  4.4 s on the very first query, which pays for 200 photos' SIFT at once.
   The *first* query used to cost 3.13 s because it also loaded DINOv2 and compiled
   the MPS kernels; the server now does that on a daemon thread at startup. Measured
   in the browser, click → first row on screen: **1.32 s** on a two-second-old
@@ -261,6 +310,8 @@ uv run python -m backend.app.retrieval.http_eval
 * The evaluation suites cover instance-vs-class, scale, texture, blur, occlusion
   and duplicates. They do **not** cover 3-D viewpoint change, and the real-photo
   test above is a locked-off camera. Treat viewpoint robustness as unproven.
+  They are also synthetic composites, not photographs — see "How hard the
+  synthetic traps really are".
 * Every query creates an object record in `.index/objects.json`, even if the user
   never gives feedback. Harmless (~200 bytes), untidy, unfixed.
 

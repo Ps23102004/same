@@ -28,12 +28,30 @@ from __future__ import annotations
 import json
 import os
 import random
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
+
+
+def _scene_rng(suite: str, tag: str, i: int, seed: int) -> random.Random:
+    """Scene layout RNG, stable across processes.
+
+    This used to be `random.Random(hash((suite, tag, i)) & 0xFFFF)`. `hash()` of
+    a str is salted by PYTHONHASHSEED, which is random per interpreter, so every
+    call to build() rendered a DIFFERENT benchmark: different backgrounds, object
+    sizes, rotations, positions and occlusion. Instance surfaces were seeded off
+    numpy and stayed put, so the sets looked identical while the difficulty moved
+    underneath them -- measured, the `hard` suite swung between recall 0.18 and
+    0.45 depending on nothing but the process. That variance was being reported
+    as RANSAC's, and it made every published number unreproducible by anyone
+    else. crc32 is stable everywhere, and `seed` now actually reaches the scenes.
+    """
+    return random.Random(zlib.crc32(f"{suite}|{tag}|{i}".encode()) ^ (seed & 0xFFFFFFFF))
+
 
 CANVAS = 1600   # realistic phone-photo scale; a "small" object is still hundreds of px
 INSTANCES = ("A", "B", "C")  # A is the target; B and C are the same-class traps
@@ -178,7 +196,7 @@ def build(out_dir: str | Path, suite: str = "hard", seed: int = 7,
 
     for inst in order:
         for i in range(cfg.n_per_instance):
-            rng = random.Random(hash((suite, inst, i)) & 0xFFFF)
+            rng = _scene_rng(suite, inst, i, seed)
             scene = _scene(rng)
             size = int(CANVAS * cfg.obj_frac * rng.uniform(0.8, 1.25))
             obj = sprites[inst].resize((size, size), Image.BICUBIC).rotate(
@@ -205,7 +223,7 @@ def build(out_dir: str | Path, suite: str = "hard", seed: int = 7,
             _stamp(out / name, base + timedelta(days=37 * clock))
 
     for i in range(cfg.n_unrelated):
-        rng = random.Random(hash((suite, "u", i)) & 0xFFFF)
+        rng = _scene_rng(suite, "u", i, seed)
         name = f"unrelated_{i:02d}.jpg"
         _scene(rng).save(out / name, quality=cfg.quality)
         manifest[name] = {"instance": None, "box": None}
