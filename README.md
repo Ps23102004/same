@@ -225,8 +225,16 @@ uv run python -m backend.app.retrieval.eval          # full precision/recall, ~4
 * **Query latency**: 0.23–0.7 s median. Stage 2 verifies up to 200 candidates in a
   thread pool; that is the whole cost, and it is flat in library size beyond 200.
   The *first* query used to cost 3.13 s because it also loaded DINOv2 and compiled
-  the MPS kernels; the server now does that on a daemon thread at startup, which
-  brings a cold first search to 0.32 s while `/api/status` still answers in 3 ms.
+  the MPS kernels; the server now does that on a daemon thread at startup. Measured
+  in the browser, click → first row on screen: **1.32 s** on a two-second-old
+  server, **0.04 s** in normal use, where the background search has already run.
+* **Two DINOv2 forward passes at once deadlocked** inside SDPA attention on MPS
+  and wedged the process permanently — no error, no timeout. It was reachable
+  from ordinary use (two overlapping searches, or a search during an index run)
+  and the background search made it routine. `backend/app/indexing/features.py`
+  now takes a process-wide lock around the only code that touches the device.
+  Six simultaneous queries: all 200, 0.28–1.34 s, serialised at ~215 ms each.
+  The lock costs nothing — one GPU could not have run them in parallel anyway.
 * The evaluation suites cover instance-vs-class, scale, texture, blur, occlusion
   and duplicates. They do **not** cover 3-D viewpoint change, and the real-photo
   test above is a locked-off camera. Treat viewpoint robustness as unproven.

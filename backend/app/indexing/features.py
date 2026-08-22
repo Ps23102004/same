@@ -40,6 +40,8 @@ if not ALLOW_MODEL_DOWNLOAD:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import cv2
+import threading
+
 import numpy as np
 import torch
 from PIL import Image
@@ -89,6 +91,17 @@ def pick_device() -> torch.device:
     return torch.device("cpu")
 
 
+# Two forward passes through dinov2 on MPS at the same time DEADLOCK, inside
+# SDPA attention, and they wedge the process permanently -- no timeout, no
+# error. Reproducible: start a warm-up embed on one thread, fire a query 100 ms
+# later on another. It is reachable from ordinary use (two overlapping searches,
+# or a search during an index run), so the lock lives here, around the only code
+# that touches the device, rather than at each call site. Reentrant because
+# embed_crops delegates to embed_images. It costs nothing: one GPU could not
+# have run them in parallel anyway.
+_GPU = threading.RLock()
+
+
 def _to_tensor(img: Image.Image) -> torch.Tensor:
     img = img.convert("RGB").resize((IMAGE_SIZE, IMAGE_SIZE), Image.BILINEAR)
     x = np.asarray(img, dtype=np.float32) / 255.0
@@ -132,6 +145,10 @@ class Embedder:
     @torch.inference_mode()
     def embed_images(self, imgs: list[Image.Image]) -> np.ndarray:
         """(B, N_REGIONS, DIM) float32, L2-normalized region descriptors."""
+        with _GPU:
+            return self._embed_images(imgs)
+
+    def _embed_images(self, imgs: list[Image.Image]) -> np.ndarray:
         tok = self._patch_tokens(imgs)
         # integral image over the patch grid -> O(1) mean pooling per window
         cum = tok.cumsum(1).cumsum(2)

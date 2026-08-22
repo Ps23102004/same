@@ -58,8 +58,18 @@ export default function App() {
     setFault(null)
     try {
       // Feedback changes the answer, so a refine never reuses a warm result.
-      const pending = objectId ? undefined : warm.current.get(keyOf(photo.id, box))
-      const result = await (pending ?? query(photo.id, box, objectId))
+      const k = objectId ? null : keyOf(photo.id, box)
+      let pending = k ? warm.current.get(k) : undefined
+      if (!pending) {
+        // Clicking before the settle timer fires would otherwise run the same
+        // query twice at once; register this one so the warm-up finds it.
+        pending = query(photo.id, box, objectId)
+        if (k) {
+          pending.catch(() => warm.current.delete(k))
+          warm.current.set(k, pending)
+        }
+      }
+      const result = await pending
       setView({ k: 'results', photo, box, result })
     } catch (e) {
       setFault(String((e as Error).message))

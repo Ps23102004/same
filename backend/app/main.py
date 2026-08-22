@@ -31,13 +31,12 @@ def _warm() -> None:
     try:
         if not (adapters.retrieval_available() and adapters.index_exists()):
             return
-        searcher = adapters.searcher()
-        # Touching .embedder is what actually loads dinov2 (Searcher builds it
-        # lazily), and one forward pass makes the GPU compile its kernels — both
-        # costs the first real query would otherwise pay in front of the user.
+        # adapters.searcher() loads dinov2 under its lock; one forward pass on
+        # top of that makes the GPU compile its kernels. Both are costs the first
+        # real query would otherwise pay in front of the user.
         from PIL import Image
 
-        searcher.embedder.embed_images([Image.new("RGB", (448, 448))])
+        adapters.searcher().embedder.embed_images([Image.new("RGB", (448, 448))])
     except Exception:  # a broken index must not stop the server from starting
         pass
 

@@ -39,7 +39,14 @@ def searcher():
     global _SEARCHER
     with _SEARCHER_LOCK:
         if _SEARCHER is None:
-            _SEARCHER = Searcher(default_index_dir())
+            fresh = Searcher(default_index_dir())
+            # Force Searcher's lazy model load HERE, inside the lock. Without
+            # it, concurrent first callers -- the startup warm-up thread and any
+            # query that arrives while it is still loading -- each build their
+            # own dinov2. Three at once took the whole process down; now they
+            # queue behind one load, which is what they would wait for anyway.
+            fresh.embedder
+            _SEARCHER = fresh
         return _SEARCHER
 
 
