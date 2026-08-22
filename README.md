@@ -62,13 +62,15 @@ instances of one class (same silhouette, *different surface*) into random scenes
 Instance A must be returned; B and C must not. That is the whole test.
 
 Numbers below are **through the running HTTP API**, over one 72-photo index
-holding both suites at once, so every query faces same-class traps from both:
+holding both suites at once, so every query faces same-class traps from both.
+Reproduce them with `backend/app/retrieval/http_eval.py` (see "Checks"): 8
+leave-one-out queries per suite, 7 true positives each, so 56 per suite.
 
 | suite | recall | same-class-different-instance accepted | unrelated accepted | median latency |
 |---|---|---|---|---|
-| easy (object ≈30% of a 1600px frame, textured) | **168/168 = 1.000** | **0** / 5376 | 1 | 0.29 s |
-| hard (16%, flat surface, blurred, JPEG q55, 25% occluded) | 36/168 = 0.214 | **0** / 5376 | 0 | 0.25 s |
-| hard, after confirming returned matches | **54/168 = 0.321** | **0** / 5376 | 0 | 0.25 s |
+| easy (object ≈30% of a 1600px frame, textured) | **56/56 = 1.000** | **0** / 128 | 0 / 384 | 0.29 s |
+| hard (16%, flat surface, blurred, JPEG q55, 25% occluded) | 25/56 = 0.446 | 1 / 128 | 0 / 384 | 0.29 s |
+| hard, after confirming returned matches | **34/56 = 0.607** | 1 / 128 | 0 / 384 | 0.29 s |
 
 The module's own leave-one-out harness (`retrieval/eval.py`, 8 queries per suite)
 agrees and adds the small-object case:
@@ -86,9 +88,17 @@ is quoted as a **range across identical runs**: with only 4–6 correspondences 
 work with, which ones RANSAC happens to sample decides the outcome, and that
 instability is a real property of the case, not measurement sloppiness.
 
-*Same-class-different-instance acceptance is 0 everywhere.* Stage 1 alone gives
-P@5 ≈ 0.25 and nearly every one of its errors is the right class and the wrong
-object — which is exactly why stage 2 exists.
+*Same-class-different-instance acceptance is 0 on every suite except `hard`,
+where it is 1 in 128.* That single failure is worth naming: querying `hard/A_01`
+accepts `hard/C_00` — a different instance of the same class — at exactly 6
+inliers, which is `MIN_INLIERS`. On a flat blurred surface the true and false
+match distributions are close enough to touch at the operating point, so the
+gate that is comfortable on `easy` is sitting on the edge on `hard`. Raising
+`MIN_INLIERS` to 7 removes it and costs recall; the trade has not been made.
+
+Stage 1 alone gives P@5 = 0.18–0.38 depending on suite, and nearly every one of
+its errors is the right class and the wrong object — which is exactly why
+stage 2 exists.
 
 **Real photographs.** 30 frames sampled from a real 4K video (rain, night, heavy
 compression): boxing one specific building in frame 0 returns **28–29 of the 29
@@ -96,7 +106,7 @@ other frames**, every returned box on that same building. 183 real photos and
 video frames from a personal library index at 2.73 img/s; queries run at 0.69 s
 median, 3.1 s worst case.
 
-**Where it fails, honestly.** The `hard` suite recalls 0.21. SIFT finds ~24
+**Where it fails, honestly.** The `hard` suite recalls 0.34–0.45. SIFT finds ~24
 keypoints on a flat blurred surface and you cannot RANSAC a consensus out of
 nothing; confirming a couple of sightings recovers half the gap, but the real
 upgrade is a learned matcher (SuperPoint + LightGlue, or LoFTR) at the
@@ -199,7 +209,19 @@ Checks:
 ```bash
 uv run python -m backend.app.indexing.selfcheck      # index round-trip, ~30 s
 uv run python -m backend.app.retrieval.selfcheck     # same instance in, same class out
-uv run python -m backend.app.retrieval.eval          # full precision/recall, ~4 min
+uv run python -m backend.app.retrieval.eval          # full precision/recall, ~90 s
+```
+
+The headline table above is measured through the HTTP API, so it needs a server.
+`--build` renders both suites and indexes them; drop it on later runs:
+
+```bash
+SAME_INDEX_DIR=/tmp/same_http/index \
+  uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000   # terminal 1
+
+SAME_INDEX_DIR=/tmp/same_http/index \
+  uv run python -m backend.app.retrieval.http_eval --build           # terminal 2
+uv run python -m backend.app.retrieval.http_eval
 ```
 
 ## Layout
@@ -211,6 +233,7 @@ uv run python -m backend.app.retrieval.eval          # full precision/recall, ~4
 | `backend/app/retrieval/` | verification, the two-stage query, the confirm/reject object store, eval harness |
 | `backend/app/api/` | FastAPI routes; one process-wide `Searcher` (constructing one loads DINOv2) |
 | `frontend/src/` | Vite + React + TS; crop gesture, chronological timeline, last-seen |
+| `backend/app/retrieval/http_eval.py` | the headline table, as a runnable check against a live server |
 | `scripts/verify_offline.py` | the privacy claim, as a runnable check |
 | `docs/` | demo recording and stills |
 
