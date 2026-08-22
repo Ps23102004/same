@@ -62,9 +62,25 @@ holding both suites at once, so every query faces same-class traps from both:
 
 | suite | recall | same-class-different-instance accepted | unrelated accepted | median latency |
 |---|---|---|---|---|
-| easy (object ≈30% of a 1600px frame, textured) | **168/168 = 1.000** | **0** | 1 | 0.29 s |
-| hard (16%, flat surface, blurred, JPEG q55, 25% occluded) | 36/168 = 0.214 | **0** | 0 | 0.25 s |
-| hard, after confirming returned matches | **54/168 = 0.321** | **0** | 0 | 0.25 s |
+| easy (object ≈30% of a 1600px frame, textured) | **168/168 = 1.000** | **0** / 5376 | 1 | 0.29 s |
+| hard (16%, flat surface, blurred, JPEG q55, 25% occluded) | 36/168 = 0.214 | **0** / 5376 | 0 | 0.25 s |
+| hard, after confirming returned matches | **54/168 = 0.321** | **0** / 5376 | 0 | 0.25 s |
+
+The module's own leave-one-out harness (`retrieval/eval.py`, 8 queries per suite)
+agrees and adds the small-object case:
+
+| suite | same instance accepted | same class, different instance | unrelated |
+|---|---|---|---|
+| easy | 56/56 = **1.000** | **0** / 128 | 0 / 96 |
+| **small** (object at 7% of the frame, ≈110 px) | 56/56 = **1.000** | **0** / 128 | 0 / 96 |
+| hard | 13–20 / 56 = 0.23–0.36 | **0** / 128 | 0 / 96 |
+| hard, after confirming | 19–39 / 56 = 0.34–0.70 | **0** / 128 | 0 / 96 |
+
+Small-object recall of 1.000 at 7% of frame width is the region pyramid earning
+its keep — a whole-image embedding cannot find that object at all. The hard suite
+is quoted as a **range across identical runs**: with only 4–6 correspondences to
+work with, which ones RANSAC happens to sample decides the outcome, and that
+instability is a real property of the case, not measurement sloppiness.
 
 *Same-class-different-instance acceptance is 0 everywhere.* Stage 1 alone gives
 P@5 ≈ 0.25 and nearly every one of its errors is the right class and the wrong
