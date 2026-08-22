@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Setup from './Setup'
 import Library from './Library'
 import PhotoView from './PhotoView'
@@ -18,6 +18,14 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [fault, setFault] = useState<string | null>(null)
 
+  // A settled selection is searched immediately, in the background. By the time
+  // the user reaches "Find this object" the answer is usually already here, so
+  // the button resolves in one frame instead of one second. The work is the
+  // real query — nothing is faked, it is only started earlier.
+  const warm = useRef(new Map<string, Promise<QueryResponse>>())
+  const keyOf = (id: string, b: Box) =>
+    `${id}|${[b.x1, b.y1, b.x2, b.y2].map((n) => n.toFixed(4)).join(',')}`
+
   const refresh = useCallback(async () => {
     try {
       const s = await getStatus()
@@ -33,11 +41,25 @@ export default function App() {
     refresh()
   }, [refresh])
 
+  function prewarm(photo: PhotoRecord, box: Box | null) {
+    if (!box) return
+    const k = keyOf(photo.id, box)
+    if (warm.current.has(k)) return
+    if (warm.current.size > 6) warm.current.clear()
+    const pending = query(photo.id, box)
+    // Observe the rejection here so a failed warm-up is never an unhandled
+    // promise; search() still sees the failure through its own await.
+    pending.catch(() => warm.current.delete(k))
+    warm.current.set(k, pending)
+  }
+
   async function search(photo: PhotoRecord, box: Box, objectId?: string) {
     setBusy(true)
     setFault(null)
     try {
-      const result = await query(photo.id, box, objectId)
+      // Feedback changes the answer, so a refine never reuses a warm result.
+      const pending = objectId ? undefined : warm.current.get(keyOf(photo.id, box))
+      const result = await (pending ?? query(photo.id, box, objectId))
       setView({ k: 'results', photo, box, result })
     } catch (e) {
       setFault(String((e as Error).message))
@@ -98,7 +120,13 @@ export default function App() {
 
         {view.k === 'photo' && (
           <>
-            <PhotoView key={view.photo.id} photo={view.photo} busy={busy} onSearch={(b) => search(view.photo, b)} />
+            <PhotoView
+              key={view.photo.id}
+              photo={view.photo}
+              busy={busy}
+              onSettle={(b) => prewarm(view.photo, b)}
+              onSearch={(b) => search(view.photo, b)}
+            />
             {fault && (
               <div className="err" style={{ margin: '0 18px 18px' }}>
                 <div className="what">Search didn't run</div>

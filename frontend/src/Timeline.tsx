@@ -6,6 +6,7 @@ const DAY = 86_400_000
 const dateFmt = new Intl.DateTimeFormat(undefined, {
   day: 'numeric', month: 'long', year: 'numeric',
 })
+const shortFmt = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
 const rel = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
 
@@ -17,6 +18,10 @@ function ago(iso: string) {
   if (mag < 365) return rel.format(-Math.round(d / 30.44), 'month')
   return rel.format(-Math.round(d / 365.25), 'year')
 }
+
+/** A date recovered from a file's mtime lands on midnight. Printing "12:00 AM"
+ *  for it would claim a precision the EXIF never had, so we print nothing. */
+const clockOf = (t: Date) => (t.getHours() || t.getMinutes() ? timeFmt.format(t) : null)
 
 /** "1 yr 4 mo" — the length of an absence, spelled out on the spine. */
 function span(days: number) {
@@ -30,18 +35,42 @@ function span(days: number) {
 const coord = (v: number, pos: string, neg: string) =>
   `${Math.abs(v).toFixed(4)}° ${v >= 0 ? pos : neg}`
 
-/** Zoom a source photo to the region the user boxed. */
-function cropStyle(photo: PhotoRecord, b: Box, size: number) {
-  const s = size / Math.max((b.x2 - b.x1) * photo.width, (b.y2 - b.y1) * photo.height, 1)
+type Dims = { width: number; height: number }
+
+/** A hair of breathing room around the box, so the object is not jammed against
+ *  the tile edge. Kept small on purpose: the verified region IS the claim, and
+ *  padding it out would quietly show more than Same actually matched. */
+function pad(b: Box, k = 0.05): Box {
+  const m = Math.max(b.x2 - b.x1, b.y2 - b.y1) * k
+  return { x1: b.x1 - m, y1: b.y1 - m, x2: b.x2 + m, y2: b.y2 + m }
+}
+
+/** Zoom an image to the region that was boxed, at `size` px square.
+ *
+ *  Two guards, both learned the hard way: scale up until the image covers the
+ *  tile in both axes (a padded box can be wider than the photo), and clamp the
+ *  offset so an object near an edge slides against the frame instead of
+ *  dragging a band of empty tile into view. */
+function cropStyle(d: Dims, b: Box, size: number) {
+  const s = Math.max(
+    size / Math.max((b.x2 - b.x1) * d.width, (b.y2 - b.y1) * d.height, 1),
+    size / d.width,
+    size / d.height,
+  )
+  const w = d.width * s
+  const h = d.height * s
+  const place = (v: number, len: number) => Math.min(0, Math.max(size - len, v))
   return {
     position: 'absolute' as const,
-    width: photo.width * s,
-    height: photo.height * s,
-    left: size / 2 - ((b.x1 + b.x2) / 2) * photo.width * s,
-    top: size / 2 - ((b.y1 + b.y2) / 2) * photo.height * s,
+    width: w,
+    height: h,
+    left: place(size / 2 - ((b.x1 + b.x2) / 2) * w, w),
+    top: place(size / 2 - ((b.y1 + b.y2) / 2) * h, h),
     maxWidth: 'none',
   }
 }
+
+const OBJ = 132 // px — the object tile, the one thing repeated down the column
 
 export default function Timeline({
   result,
@@ -59,6 +88,9 @@ export default function Timeline({
   busy: boolean
 }) {
   const [verdicts, setVerdicts] = useState<Record<string, boolean>>({})
+  // Matches carry a box but not the size of the image it sits in; the thumbnail
+  // reports that when it loads, and the same bytes are reused by the crop.
+  const [dims, setDims] = useState<Record<string, Dims>>({})
   const matches = result.matches
   const taught = Object.keys(verdicts).length
 
@@ -70,20 +102,22 @@ export default function Timeline({
   }
 
   const last = result.last_seen
+  const dated = matches.filter((m) => m.taken_at).map((m) => new Date(m.taken_at!).getTime())
+  const arc = dated.length > 1 ? (Math.max(...dated) - Math.min(...dated)) / DAY : 0
 
   return (
     <div className="results">
       {last ? (
         <div className="lastseen">
           <div className="crop">
-            <img src={imageUrl(source.id)} alt="" style={cropStyle(source, box, 116)} />
+            <img src={imageUrl(source.id)} alt="" style={cropStyle(source, pad(box, 0.06), 132)} />
           </div>
           <div className="body">
             <div className="eyebrow">Last seen</div>
             <p className="when">{last.taken_at ? dateFmt.format(new Date(last.taken_at)) : 'Date unknown'}</p>
             <div className="ago">
               {last.taken_at
-                ? `${ago(last.taken_at)}, around ${timeFmt.format(new Date(last.taken_at))}`
+                ? [ago(last.taken_at), clockOf(new Date(last.taken_at))].filter(Boolean).join(', around ')
                 : 'This photo carries no timestamp.'}
             </div>
             {last.gps ? (
@@ -100,6 +134,20 @@ export default function Timeline({
               <div className="whereno">No location in this photo's EXIF.</div>
             )}
           </div>
+          {matches.length > 1 && (
+            <dl className="tally">
+              <div>
+                <dt>Sightings</dt>
+                <dd>{matches.length}</dd>
+              </div>
+              {arc > 0 && (
+                <div>
+                  <dt>Across</dt>
+                  <dd>{span(arc)}</dd>
+                </div>
+              )}
+            </dl>
+          )}
         </div>
       ) : (
         <div className="empty">
@@ -125,9 +173,7 @@ export default function Timeline({
         <>
           <div className="tlhead">
             <h2>Across the library</h2>
-            <span className="mono faint">
-              {matches.length} sighting{matches.length === 1 ? '' : 's'}, oldest first
-            </span>
+            <span className="mono faint">oldest first, newest last</span>
           </div>
 
           <div className="timeline">
@@ -138,25 +184,42 @@ export default function Timeline({
               const days = t && pt ? (t.getTime() - pt.getTime()) / DAY : 0
               const newYear = t && (!pt || pt.getFullYear() !== t.getFullYear())
               const verdict = verdicts[m.photo_id]
+              const d = dims[m.photo_id]
+              const clock = t && clockOf(t)
 
               return (
-                <div key={m.photo_id}>
+                <div key={m.photo_id} className="beat" style={{ animationDelay: `${Math.min(i, 14) * 55}ms` }}>
                   {/* The empty stretch IS the information: it is drawn as long as
-                      the object was out of sight. */}
-                  {days > 14 && (
-                    <div className="gap" style={{ height: Math.min(130, (Math.log2(days + 1) - 3) * 16) }}>
-                      {days > 45 && <span className="lbl">{span(days)}</span>}
+                      the object was out of sight, and says how long. */}
+                  {days > 21 && (
+                    <div className="gap" style={{ height: Math.min(72, 14 + (Math.log2(days) - 4.4) * 12) }}>
+                      <i />
+                      <span className="lbl">{span(days)}</span>
                     </div>
                   )}
                   {newYear && <div className="yr">{t!.getFullYear()}</div>}
 
                   <div
                     className={`row ${verdict === true ? 'confirmed' : ''} ${verdict === false ? 'rejected' : ''}`}
-                    style={{ animationDelay: `${Math.min(i, 12) * 45}ms` }}
                   >
                     <span className="node" />
-                    <div className="shot">
-                      <img src={imageUrl(m.photo_id, 480)} alt="" loading="lazy" />
+
+                    <div className="obj" style={{ width: OBJ, height: OBJ }}>
+                      {d && <img src={imageUrl(m.photo_id, 480)} alt="" style={cropStyle(d, pad(m.bbox), OBJ)} />}
+                    </div>
+
+                    <div className="scene" title="Where it sits in the frame">
+                      <img
+                        src={imageUrl(m.photo_id, 480)}
+                        alt=""
+                        loading="lazy"
+                        onLoad={(e) => {
+                          // Read the element now: currentTarget is null by the
+                          // time a state updater runs.
+                          const { naturalWidth: width, naturalHeight: height } = e.currentTarget
+                          setDims((v) => (v[m.photo_id] ? v : { ...v, [m.photo_id]: { width, height } }))
+                        }}
+                      />
                       <span
                         className="mark"
                         style={{
@@ -169,16 +232,18 @@ export default function Timeline({
                     </div>
 
                     <div className="meta">
-                      <div className="date">
-                        {t ? dateFmt.format(t) : 'No timestamp'}
-                      </div>
+                      <div className="date">{t ? dateFmt.format(t) : 'No timestamp'}</div>
                       <div className="sub">
-                        {t ? `${timeFmt.format(t)} · ${ago(m.taken_at!)}` : 'Not dated in EXIF'}
-                        {m.gps && ` · ${coord(m.gps.lat, 'N', 'S')}, ${coord(m.gps.lon, 'E', 'W')}`}
+                        {t ? [clock, ago(m.taken_at!)].filter(Boolean).join(' · ') : 'Not dated in EXIF'}
                       </div>
-                      <div className="conf">
-                        {m.inlier_count} inliers
-                        {!m.verified && <span className="faint">· unverified</span>}
+                      {m.gps && (
+                        <div className="gps mono">
+                          {coord(m.gps.lat, 'N', 'S')}, {coord(m.gps.lon, 'E', 'W')}
+                        </div>
+                      )}
+                      <div className="conf mono">
+                        <b>{m.inlier_count}</b> inliers
+                        {!m.verified && <span className="faint"> · unverified</span>}
                       </div>
                     </div>
 
@@ -204,11 +269,22 @@ export default function Timeline({
                 </div>
               )
             })}
+            <div className="tlend">
+              <span className="mono faint">
+                {matches.length} sighting{matches.length === 1 ? '' : 's'}
+                {arc > 0 && ` across ${span(arc)}`}
+                {dated.length > 0 &&
+                  ` · first ${shortFmt.format(new Date(Math.min(...dated)))} ${new Date(
+                    Math.min(...dated),
+                  ).getFullYear()}`}
+              </span>
+            </div>
           </div>
 
           {taught > 0 && (
             <div className="refine">
               <button className="ghost" onClick={onRefine} disabled={busy}>
+                {busy && <span className="spin tiny" />}
                 {busy ? 'Searching' : `Search again using my ${taught} answer${taught === 1 ? '' : 's'}`}
               </button>
               <span className="faint">

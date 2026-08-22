@@ -5,7 +5,11 @@ passport wallet — and see every photo it has ever appeared in, and where you l
 saw it. Entirely local: no cloud, and the "no cloud" part is verified by a script,
 not by a promise.
 
-![Timeline of one object across a library](docs/timeline.png)
+![Boxing one object and getting back every photo it appears in](docs/demo.gif)
+
+*Real capture, real backend: box the object, get every other photo it appears in,
+oldest first. Also as [`docs/demo.mp4`](docs/demo.mp4); stills in
+[`docs/timeline.png`](docs/timeline.png) and [`docs/selection.png`](docs/selection.png).*
 
 ## The problem
 
@@ -119,6 +123,19 @@ product returned *nothing* for an object plainly there. Rendering the crop at th
 same effective scale as the index moved those same matches to 0.62–0.72:
 **0 → 29 correct matches.** For photos at or below 1024 px nothing changes.
 
+## The gesture
+
+Selecting the object is the one thing the user does by hand, so it is adjustable
+rather than one-shot: drag anywhere on the photo to draw a box, drag its edges or
+corners to reshape it, drag inside it to slide it, arrow keys to nudge by a pixel
+(hold ⌥ for ten, ⇧ to pull the far corner), `Esc` to clear, `Return` to search.
+Every edge has a 12 px grab margin, so the pointer never has to find a hairline.
+
+A settled selection is searched **in the background, 260 ms after you stop
+moving**, and "Find this object" then usually resolves in a frame. It is the same
+query with the same result — started earlier, not faked. Re-running it after
+feedback never reuses a warm answer, because feedback changes the answer.
+
 ## Two of the same mug
 
 Two identical manufactured items **will** match each other, and no amount of
@@ -195,6 +212,7 @@ uv run python -m backend.app.retrieval.eval          # full precision/recall, ~4
 | `backend/app/api/` | FastAPI routes; one process-wide `Searcher` (constructing one loads DINOv2) |
 | `frontend/src/` | Vite + React + TS; crop gesture, chronological timeline, last-seen |
 | `scripts/verify_offline.py` | the privacy claim, as a runnable check |
+| `docs/` | demo recording and stills |
 
 ## Costs and limits
 
@@ -204,10 +222,27 @@ uv run python -m backend.app.retrieval.eval          # full precision/recall, ~4
 * **Throughput**: 13 img/s on 1600 px images, 2.7 img/s on a real mixed library of
   12 MP HEIC/JPEG plus video decoding (M-series, MPS). Re-indexing is incremental
   — unchanged files cost one `stat()`.
-* **Query latency**: 0.25–0.7 s median. Stage 2 verifies up to 200 candidates in a
+* **Query latency**: 0.23–0.7 s median. Stage 2 verifies up to 200 candidates in a
   thread pool; that is the whole cost, and it is flat in library size beyond 200.
+  The *first* query used to cost 3.13 s because it also loaded DINOv2 and compiled
+  the MPS kernels; the server now does that on a daemon thread at startup, which
+  brings a cold first search to 0.32 s while `/api/status` still answers in 3 ms.
 * The evaluation suites cover instance-vs-class, scale, texture, blur, occlusion
   and duplicates. They do **not** cover 3-D viewpoint change, and the real-photo
   test above is a locked-off camera. Treat viewpoint robustness as unproven.
 * Every query creates an object record in `.index/objects.json`, even if the user
   never gives feedback. Harmless (~200 bytes), untidy, unfixed.
+
+## Attribution and license
+
+Same's code is MIT-licensed (`LICENSE`). It loads, unmodified, one pretrained
+model:
+
+* **DINOv2** ([Oquab et al., Meta AI Research, 2023](https://arxiv.org/abs/2304.07193)),
+  `facebook/dinov2-base` weights via Hugging Face `transformers`, Apache 2.0.
+  Same only reads its patch-token activations; no fine-tuning is done and no
+  DINOv2 code is vendored.
+
+Stage 2 uses OpenCV's SIFT and FLANN implementations (Apache 2.0 since
+OpenCV 4.4; SIFT's original patent expired in 2020). No other third-party
+model or weights are used.
