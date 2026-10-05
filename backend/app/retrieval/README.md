@@ -65,8 +65,8 @@ fixes it — it needs geometry.
 ## The operating point, and how it was chosen
 
 ```
-accept  ⟺  inliers ≥ 20                                  (STRONG_INLIERS)
-        or (inliers ≥ 6  and  inliers/matches ≥ 0.40)     (MIN_INLIERS, MIN_INLIER_FRACTION)
+accept  ⟺  inliers ≥ 30                                  (STRONG_INLIERS)
+        or (inliers ≥ 6  and  inliers/matches ≥ 0.45)     (MIN_INLIERS, MIN_INLIER_FRACTION)
 ```
 
 Two gates, because **a raw inlier count is not scale-invariant**. Measured
@@ -81,9 +81,11 @@ one transform and a lookalike has almost none.
 The pair was picked by grid search over `inliers ∈ [4,15] × fraction ∈ [0,0.6]`
 across all 168 true positives and 672 lookalike/unrelated candidates: it is the
 highest-recall setting with **zero false positives on all three suites**.
-`STRONG_INLIERS = 20` is an unmeasured hedge for cluttered real photos, where
-the ratio test scatters correspondences over the background and could push a
-true match under the fraction gate; it changes nothing on the eval set.
+`STRONG_INLIERS` is the escape hatch for cluttered real photos, where the ratio
+test scatters correspondences over the background and could push a true match
+under the fraction gate. It was raised 20 → 30 and the fraction gate 0.40 → 0.45
+during integration (see the comments above the constants in `search.py` for the
+sweeps); the numbers in this file's older curves predate that change.
 
 Curve for the `small` suite (the full sweep for all three is printed by
 `eval.py`; note how the fraction gate collapses the false positives):
